@@ -1,32 +1,28 @@
 extern crate ocl;
 extern crate rand;
 
-use ocl::{ProQue, OclCoreError, OclPrm, Buffer, Platform, Device, flags};
+use ocl::{OclPrm, flags};
 use std::num::Wrapping;
 use std::ops::AddAssign;
 use std::str;
 use std::fs::File;
 use std::io::Read;
-use ocl::enums::PlatformInfo;
 use ocl::core::{ContextProperties, ArgVal};
 use ocl::core;
-use std::borrow::Borrow;
-use std::any::Any;
 use std::ffi::CString;
-use std::fmt::{Debug, Formatter, Error, LowerHex};
-//use ocl::core::types::enums::EmptyInfoResultError::Context;
-use ocl::core::Context;
+use std::fmt::{Debug, Formatter, Error};
 use std::str::from_utf8;
 use num_bigint::{ToBigInt, BigInt};
 
 fn main() {
     let m = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let bytes : Vec<u8> = m.bytes().collect();
-    let expanded_bytes = find_n_first_zeros_sha1(bytes, 9, 100);
+    let expanded_bytes = find_n_first_zeros_sha1(bytes, 15, 100);
     println!("{}", from_utf8(&expanded_bytes).unwrap());
     println!("{:040x}", sha1(from_utf8(&expanded_bytes).unwrap()));
 }
 
+// find a suffix of `bytes` such as the hash of the whole has at least n zeros
 fn find_n_first_zeros_sha1(bytes: Vec<u8>, n: u8, workitem_nbr: usize) -> Vec<u8> {
     let h0 : u32 = 0x67452301;
     let h1 : u32 = 0xEFCDAB89;
@@ -99,7 +95,9 @@ fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32, workit
     let platforms = core::get_platform_ids().unwrap();
     let platform_id = platforms.into_iter()
         .filter(|p| core::get_device_ids(p, Some(flags::DEVICE_TYPE_GPU), None)
-            .unwrap_or(Vec::new()).len() != 0)
+            .unwrap_or(Vec::new())
+            .len() != 0
+        )
         .next()
         .unwrap();
     let device_ids = core::get_device_ids(&platform_id, Some(flags::DEVICE_TYPE_GPU), None).unwrap();
@@ -114,7 +112,7 @@ fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32, workit
     let queue = core::create_command_queue(&context, &device_id, None).unwrap();
     let dims = [workitem_nbr, 1, 1];
 
-    // (2) Create a `Buffer`:
+    // (2) Create buffers:
     let random_chunks = Chunk::generateRandomChunks(dims[0] as u32);
     let random_chunks = unsafe { core::create_buffer(&context, flags::MEM_READ_ONLY |
         flags::MEM_COPY_HOST_PTR, dims[0], Some(&random_chunks)).unwrap() };
@@ -148,17 +146,6 @@ fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32, workit
         .take_while(|byte| *byte != 0x80)
         .collect();
     Ok(message_bytes)
-}
-
-fn find_first_least_signficant_bit(mut nbr: u32) -> u8 {
-    let mut condition = nbr & 1;
-    let mut result = 0u8;
-    while condition == 0 {
-        nbr >>= 1;
-        condition = nbr & 1;
-        result += 1;
-    }
-    return result;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -273,6 +260,16 @@ impl Chunk {
         }
     }
 
+    pub fn generateDeterministChunks(size: u32) -> Vec<Chunk>{
+        let mut result = Vec::new();
+        let index = 0u64;
+        while size != 0 && index < (1u64 << 63) {
+            let mut rc: Chunk = Chunk::default();
+
+        }
+        result
+    }
+
     pub fn generateRandomChunks(size: u32) -> Vec<Chunk>{
         let mut result = Vec::new();
         for _ in 0..size {
@@ -316,21 +313,6 @@ impl Chunk {
     }
 }
 
-impl LowerHex for Chunk {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        let size  = self.data[15];
-        print!("{:x}", size);
-//        for i in 0..size/32{
-//            print!("{:x}", self.data[i]);
-//        }
-//        for i in 0..size%32{
-//            for j in 0..i/8{
-//                print!("{:x}", (self.data[size/32] >> (32-8*(j+1))) & 0xff);
-//            }
-//        }
-        Ok(())
-    }
-}
 
 impl Debug for Chunk {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
