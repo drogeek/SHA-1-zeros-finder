@@ -104,7 +104,7 @@ void prepare_final_chunk(Chunk* c, unsigned char padding_position, unsigned long
 
 // fills the chunk with 9 ascii characters, and returns how many integers have been filled in the chunk
 // or -1 if we generate a [\t\r\n ] character
- char fill_chunk(Chunk* c, unsigned long nbr){
+char fill_chunk(Chunk* c, unsigned long nbr){
     unsigned char idx = 0;
     unsigned char i;
     unsigned char ascii_char;
