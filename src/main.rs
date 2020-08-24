@@ -8,7 +8,7 @@ use std::str;
 use std::fs::File;
 use std::io::Read;
 use ocl::enums::PlatformInfo;
-use ocl::core::{DEVICE_TYPE_GPU, ContextProperties, ArgVal, MEM_COPY_HOST_PTR};
+use ocl::core::{ContextProperties, ArgVal};
 use ocl::core;
 use std::borrow::Borrow;
 use std::any::Any;
@@ -17,116 +17,92 @@ use std::fmt::{Debug, Formatter, Error, LowerHex};
 //use ocl::core::types::enums::EmptyInfoResultError::Context;
 use ocl::core::Context;
 use std::str::from_utf8;
+use num_bigint::{ToBigInt, BigInt};
 
 fn main() {
+    let m = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let bytes : Vec<u8> = m.bytes().collect();
+    let expanded_bytes = find_n_first_zeros_sha1(bytes, 9, 100);
+    println!("{}", from_utf8(&expanded_bytes).unwrap());
+    println!("{:040x}", sha1(from_utf8(&expanded_bytes).unwrap()));
+}
+
+fn find_n_first_zeros_sha1(bytes: Vec<u8>, n: u8, workitem_nbr: usize) -> Vec<u8> {
     let h0 : u32 = 0x67452301;
     let h1 : u32 = 0xEFCDAB89;
     let h2 : u32 = 0x98BADCFE;
     let h3 : u32 = 0x10325476;
     let h4 : u32 = 0xC3D2E1F0;
-    let m = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let bytes: Vec<u8>= m.bytes().into_iter().collect();
     let bits_len: u32 = (bytes.len() * 8) as u32;
     assert_eq!(bits_len % 512, 0);
 
     // convert to chunks, which internally split data in 16 32bits-numbers and extend them to 80 32bits-numbers
     // the given bytes' size should be a multiple of 512 bits here
-    let chunks = Chunk::from_bytes(bytes);
+    let chunks = Chunk::from_bytes(bytes.clone());
     // initial values for sha-1
     let mut result = ResultSha1::new(h0, h1, h2, h3, h4);
     for chunk in chunks {
         result += main_operation_sha1(chunk, result);
     }
-    println!();
-    print!("{}", m);
-    let suffix = explore_sha1_ocl(result, 9, bits_len).unwrap();
-//    print!("{}", m);
-    for chunk in suffix{
-//        for byte in chunk.as_u8().iter() {
-//            print!("{:x} ", byte);
-//        }
-        print!("{}", from_utf8(&chunk.as_u8()).unwrap());
+    bytes.into_iter()
+        .chain(explore_sha1_ocl(result, n, bits_len, workitem_nbr).unwrap())
+        .collect()
+}
+
+fn sha1(m : &str) -> BigInt {
+    let h0 : u32 = 0x67452301;
+    let h1 : u32 = 0xEFCDAB89;
+    let h2 : u32 = 0x98BADCFE;
+    let h3 : u32 = 0x10325476;
+    let h4 : u32 = 0xC3D2E1F0;
+
+    //convert to bytes
+    let mut bytes: Vec<u8> = m.bytes().into_iter().collect();
+    let bits_len: u64 = bytes.len() as u64 * 8;
+
+    // add 0x80 to introduce a 1 after the message
+    bytes.push(1<<7);
+    // padding with 0s to have a multiple of 512 bytes (counting the ending data representing the size of m in bits)
+    let nbr_zero_bytes = (512 - (bits_len + 8 + 64)  % 512)/8;
+    for _ in 0..nbr_zero_bytes {
+        bytes.push(0);
     }
-    println!();
+    // add the size of the message in bits, represented on 64 bits
+    bytes.append(&mut cut_in_bytes(bits_len));
+
+    // convert to chunks, which internally split data in 16 32bits-numbers and extend them to 80 32bits-numbers
+    let chunks = Chunk::from_bytes(bytes);
+    // initial values for sha-1
+    let mut result = ResultSha1::new(h0, h1, h2, h3, h4);
+    for chunk in chunks{
+        result += main_operation_sha1(chunk, result.clone());
+    }
+    // concatenate the 5 32bits-values into a 160bits-value, this is the final digest
+    result.a.0.to_bigint().unwrap() << 128 |
+        result.b.0.to_bigint().unwrap() << 96 |
+        result.c.0.to_bigint().unwrap() << 64 |
+        result.d.0.to_bigint().unwrap() << 32 |
+        result.e.0.to_bigint().unwrap()
 }
 
 
 
-//fn find_hash_value(authdata: &str, difficulty: u32){
-//fn find_hash_value(authdata: Vec<u32>, difficulty: u32) {
-//    for platform in Platform::list(){
-//        println!("{}", platform.info(PlatformInfo::Name).unwrap());
-//        for device in Device::list_all(platform).unwrap(){
-//            println!("{}", device.name().unwrap());
-//        }
-//    }
-//    let mut file = File::open("src/kernel.cl").unwrap();
-//    let mut src = String::new();
-//    file.read_to_string(&mut src).unwrap();
-//
-//    // (1) Create an all-in-one context, program, command queue, and work /
-//    // buffer dimensions:
-//    let pro_que = ProQue::builder()
-//        .src(src)
-//        .dims(3072)
-////        .dims(200)
-//        .build().unwrap();
-//
-//    // (2) Create a `Buffer`:
-//    let buffer = pro_que.create_buffer::<u32>().unwrap();
-//    let result = pro_que.create_buffer::<u32>().unwrap();
-//    let finished = Buffer::builder().queue(pro_que.queue().clone()).len(1).fill_val(0u8).build().unwrap();
-////    let finished = pro_que.create_buffer::<u8>().unwrap();
-//
-//    let test = IntResult { a: 35, b: 0, c: 0, d: 0, e: 0 };
-//    // (3) Create a kernel with arguments matching those in the source above:
-//    let kernel = pro_que.kernel_builder("sha1_step")
-//        .arg(&buffer)
-//        .arg(&result)
-//        .arg(&finished)
-//        .arg(&test)
-//        .arg(difficulty)
-//        .build().unwrap();
-//    unsafe { kernel.enq().unwrap() }
-//
-//    let mut vec = vec![0u32; buffer.len()];
-//    buffer.read(&mut vec).enq();
-//
-//    println!("idx {} value {}", 200, vec[200]);
-//}
 
-
-
-
-
-
-fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32) -> ocl::Result<Vec<Chunk>> {
+fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32, workitem_nbr: usize) -> ocl::Result<Vec<u8>> {
 
     let mut file = File::open("src/kernel.cl").unwrap();
     let mut src = String::new();
     file.read_to_string(&mut src).unwrap();
-//    let src = r#"
-//        __kernel void add(__global float* buffer, float scalar) {
-//            buffer[get_global_id(0)] += scalar;
-//        }
-//    "#;
-
-    // (1) Define which platform and device(s) to use. Create a context,
-    // queue, and program then define some dims (compare to step 1 above).
-//    let mut platform = Platform::list()
-//        .into_iter()
-//        .filter(|p| Device::list_select(p, Some(DEVICE_TYPE_GPU), &[0] ).unwrap_or(Vec::new()).len() != 0)
-//        .next()
-//        .unwrap();
 
       // (1) Define which platform and device(s) to use. Create a context,
     // queue, and program then define some dims..
     let platforms = core::get_platform_ids().unwrap();
     let platform_id = platforms.into_iter()
-        .filter(|p| core::get_device_ids(p, Some(DEVICE_TYPE_GPU), None).unwrap_or(Vec::new()).len() != 0)
+        .filter(|p| core::get_device_ids(p, Some(flags::DEVICE_TYPE_GPU), None)
+            .unwrap_or(Vec::new()).len() != 0)
         .next()
         .unwrap();
-    let device_ids = core::get_device_ids(&platform_id, Some(DEVICE_TYPE_GPU), None).unwrap();
+    let device_ids = core::get_device_ids(&platform_id, Some(flags::DEVICE_TYPE_GPU), None).unwrap();
     let device_id = device_ids[0];
     let context_properties = ContextProperties::new().platform(platform_id);
     let context = core::create_context(Some(&context_properties),
@@ -136,19 +112,18 @@ fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32) -> ocl
     core::build_program(&program, Some(&[device_id]), &CString::new("").unwrap(),
         None, None).unwrap();
     let queue = core::create_command_queue(&context, &device_id, None).unwrap();
-    let dims = [10, 1, 1];
+    let dims = [workitem_nbr, 1, 1];
 
     // (2) Create a `Buffer`:
-//    let mut vec = vec![12; dims[0]];
-//    let mut vec = vec![1,2,3,4];
     let random_chunks = Chunk::generateRandomChunks(dims[0] as u32);
     let random_chunks = unsafe { core::create_buffer(&context, flags::MEM_READ_ONLY |
         flags::MEM_COPY_HOST_PTR, dims[0], Some(&random_chunks)).unwrap() };
     let finished = unsafe { core::create_buffer(&context, flags::MEM_READ_WRITE |
-        MEM_COPY_HOST_PTR, 1, Some(&[0u8])).unwrap() };
-    // we assume 64 chunks will do
-    let mut result_host = vec![Chunk::default(); 32];
-    let result = unsafe { core::create_buffer(&context, flags::MEM_WRITE_ONLY | flags::MEM_COPY_HOST_PTR, 32, Some(&result_host)).unwrap() };
+        flags::MEM_COPY_HOST_PTR, 1, Some(&[0u8])).unwrap() };
+    // there will be 3 chunks max
+    let mut result_host = vec![Chunk::default(); 3];
+    let result = unsafe { core::create_buffer(&context, flags::MEM_WRITE_ONLY |
+        flags::MEM_COPY_HOST_PTR, 3, Some(&result_host)).unwrap() };
 
     // (3) Create a kernel with arguments matching those in the source above:
     let kernel = core::create_kernel(&program, "explore_sha1").unwrap();
@@ -167,21 +142,12 @@ fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32) -> ocl
     unsafe { core::enqueue_read_buffer(&queue, &result, true, 0, &mut result_host,
         None::<core::Event>, None::<&mut core::Event>)?; }
 
-    let mut valid_chunks: Vec<_> = result_host.into_iter()
-        .filter(|chunk| chunk.data.iter()
-           .filter(|x| **x != 0)
-           .collect::<Vec<_>>().len() != 0)
+    // we used only ascii characters, so the byte 0x80 is present in only one place: the start of the padding
+    let message_bytes : Vec<u8> = result_host.into_iter()
+        .flat_map(|c| c.as_u8())
+        .take_while(|byte| *byte != 0x80)
         .collect();
-    let last_index = valid_chunks.len()-1;
-    valid_chunks[last_index].data[15] = 0;
-//    let mut i = last_index -1;
-//    while valid_chunks[last_index].data[i] == 0 {
-//        i+=1;
-//    }
-//    println!("{} {:x}", i, valid_chunks[last_index].data[i]);
-//    let bit_pos = find_first_least_signficant_bit(valid_chunks[last_index].data[i]);
-//    valid_chunks[last_index].data[i] &= ((1u64<<32)-1 - (1u64 << bit_pos as u64)) as u32;
-    Ok(valid_chunks)
+    Ok(message_bytes)
 }
 
 fn find_first_least_signficant_bit(mut nbr: u32) -> u8 {
@@ -318,6 +284,7 @@ impl Chunk {
             result.push(rc);
         }
         result
+//        Chunk::from_bytes("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".bytes().collect())
     }
 
     fn generateRandomChunkPart() -> u32 {
@@ -338,11 +305,11 @@ impl Chunk {
         tmp
     }
 
-    fn as_u8(&self) -> [u8; 64] {
-        let mut result = [0u8; 64];
+    fn as_u8(&self) -> Vec<u8> {
+        let mut result = vec![0u8; 64];
         for (i, nbr) in self.data.iter().take(16).enumerate(){
             for j in 0..4{
-                result[i+j] = ((nbr >> (32 - 8*(j+1))) & 0xff) as u8;
+                result[i*4+j] = ((nbr >> (32 - 8*(j+1))) & 0xff) as u8;
             }
         }
         result

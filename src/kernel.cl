@@ -31,298 +31,7 @@ void extend_chunk(Chunk* chunk){
     }
 }
 
-// data_size < (64-8-1) bytes, because we need space for the message_size (in bits) and space for at least the separator byte
-Chunk gen_final_chunk(char* data, unsigned char data_size, unsigned long message_size) {
-    Chunk result = {0};
-    unsigned char i, j;
-    //copy data to the chunk
-
-    for(i=0; i<data_size/4; i++){
-        for (j=0; j<4; j++){
-            result.data[i] |= data[4*i+j] << (32-(j+1)*8);
-        }
-    }
-    for(j=0; j<data_size%4; j++){
-        result.data[i] |= data[4*i+j] << (32-(j+1)*8);
-    }
-    //separator byte
-    result.data[i] |= 0x80 << (32-(j+1)*8);
-
-    //zero padding until the 64-8-1th byte
-    for (i=i+1; i<14; i++){
-        result.data[i] = 0;
-    }
-
-    //append message_size in the end, byte by byte
-
-    unsigned long mask = 0xffffffff;
-    for(j=0; j<2; j++){
-        result.data[i+j] = (unsigned int)(message_size & (mask << (64 - 32 * (j+1))));
-    }
-    extend_chunk(&result);
-    return result;
-}
-
-//typedef struct{
-//    char value;
-//    char finished;
-//}AsciiGen;
-//
-//typedef struct{
-//    char size;
-//    // there are 54 possible ascii characters (64 - (1 two bytes character + 8 bytes of size))
-//    AsciiGen sequence[54];
-//}AsciiSeqGen;
-//
-//void reset_asciiGen(AsciiGen* g){
-//    g->value = 0;
-//    g->finished = 0;
-//}
-//
-//void init_asciiSeqGen(AsciiSeqGen* g, char size){
-//    unsigned char i;
-//    for(i=0; i<size; i++){
-//        reset_asciiGen(&g->sequence[i]);
-//    }
-//    g->size = size;
-//}
-//
-//
-//
-//void nextAscii(AsciiGen* g){
-//    g->value += 1;
-//    if (g->value == 0x7f) {
-//        g->finished = 1;
-//    }
-//}
-//
-//
-////increase the ascii generator sequence
-////returns 0 if the sequence is over, 1 otherwise
-//char nextAsciiSeq(AsciiSeqGen* seq){
-//    unsigned char i = 0;
-//    printf("prout\n");
-//    while (seq->sequence[i].finished == 1) {
-//        i+=1;
-//    }
-//    if (i == seq->size) {
-//        return 0;
-//    }
-//    else{
-//        //increase the ith generator
-//        nextAscii(&seq->sequence[i]);
-//
-//        if (!seq->sequence[i].finished){
-//            //reset previous ascii generators
-//            unsigned char j;
-//            for(j=0; j<i; j++){
-//                reset_asciiGen(&seq->sequence[j]);
-//            }
-//        }
-//    }
-//    return 1;
-//}
-
-// seq size must be a multiple of 2
-// chunk must be initialized to 0
-//void AsciiSeq2Chunk(Chunk* chunk, AsciiSeqGen* seq, unsigned int size){
-//    unsigned char i, j, k;
-//    for(i=0; i<seq->size/4; i++){
-//        chunk->data[i] = 0;
-//        for(j=0; j<4; j++){
-//            chunk->data[i] |= seq->sequence[i*4 + j].value << (32 - (j+1)*8);
-//        }
-//    }
-//    // at this point, there are 2 scenarios, either 2 bytes are left, or none
-//    // if 2 bytes are left, we put them in the upper part, and the lower part is 0xc080
-//    // if 0 bytes are left, we put 0xc080 in the upper part of the next part of the chunk
-//    // we add the size in the end, which should be on only 2 bytes
-//    chunk->data[i] = 0;
-//    char left_overs = seq->size%4;
-//    if (left_overs) {
-//        for(j=0; j<left_overs; j++){
-//            chunk->data[i] |= seq->sequence[i*4 + j].value << (32 - (j+1)*8);
-//        }
-//        chunk-> data[i] |= 0xc080;
-//    }
-//    else {
-//        i+=1;
-//        chunk -> data[i] = 0xc0800000;
-//    }
-//    //every bytes in between are supposed to be already 0
-//    chunk->data[63] = size;
-//    extend_chunk(&chunk);
-//}
-
-// fill the chunk with ascii characters up to 64/7=9 ascii characters, ending with a multi-bytes character of
-// size 2 (constant) whose last byte is 0x8000 (constraint from both utf-8 and the padding expected by sha-1)
-// also put the message_size encoding in the end, and then extend the chunk as defined by sha-1
-//!\ we expect the chunk to be initialized at 0 !
-void fill_chunk_with_constraints(Chunk* chunk, char size, unsigned int message_size, unsigned long index){
-    unsigned char i, j, k, l;
-    for(i=0; i<size/4; i++){
-        for(j=0; j<4; j++){
-            chunk->data[i] |= (index & 0x7f) << j*8;
-            index >>= 7;
-        }
-    }
-    // at this point, there are 2 scenarios, either 2 bytes are left, or none
-    // if 2 bytes are left, we put them in the upper part, and the lower part is 0xc080
-    // if 0 bytes are left, we put 0xc080 in the upper part of the next part of the chunk
-    // we add the size in the end, which should be on only 2 bytes
-    char left_overs = size%4;
-    if (left_overs) {
-        for(j=0; j<left_overs; j++){
-            chunk->data[i] |= (index & 0x7f) << (j*8 + 16);
-            index >>= 7;
-        }
-        chunk-> data[i] |= 0xc880;
-        //printf("%x\n", chunk ->data[i]);
-    }
-    else {
-        chunk -> data[i] = 0xc8800000;
-    }
-    //every bytes in between are supposed to be already 0
-    chunk->data[15] = message_size;
-    extend_chunk(chunk);
-}
-
-// data is assumed to be of size 512/8=64 bytes
-Chunk gen_chunk(char* data) {
-    Chunk result = {0};
-    char i, j;
-    for (i=0; i<16; i++){
-        for (j=0; j<4; j++){
-            result.data[i] |= data[4*i+j]<<(32-(j+1)*8)<< (32 - (j+1)*8);
-        }
-    }
-    extend_chunk(&result);
-    return result;
-}
-
-
-
-
-
-unsigned char is_utf8(unsigned char* potential_utf8_str, unsigned int size) {
-    unsigned int start_idx = 0;
-    while (size != 0) {
-        unsigned char first_byte = potential_utf8_str[start_idx];
-        // check if it's ascii and not {\n\r\t }
-        if ((first_byte & 0x80) >> 7 == 0) {
-            if (first_byte ==  0x09 ||
-                first_byte ==  0x0d ||
-                first_byte ==  0x0a ||
-                first_byte ==  0x20) {
-                return 0;
-            }
-            // skip 1 byte
-            start_idx += 1;
-            size -= 1;
-        }
-        else if ((first_byte & 0xe0) >> 5 == 0b110) {
-            start_idx += 1;
-            size -= 1;
-            // it's a 2 bytes character, check if there is a second byte
-            if ((potential_utf8_str[start_idx] & 0xf0) >> 6 == 0b10) {
-                start_idx += 1;
-                size -= 1;
-            }
-            else {
-                return 0;
-            }
-        }
-        else if ((first_byte & 0xf0) >> 4 == 0b1110) {
-            start_idx += 1;
-            size -= 1;
-            // it's a 3 bytes character, check if there are 2 additional bytes
-            char i;
-            for (i=0; i<2; i++){
-                if ((potential_utf8_str[start_idx + i] & 0xf0) >> 6 != 0b10) {
-                    return 0;
-                }
-            }
-
-            if (first_byte == 0xe0){
-                if (potential_utf8_str[start_idx] < 0xa0) {
-                    return 0;
-                }
-            }
-            else if (first_byte == 0xed){
-                 if (potential_utf8_str[start_idx] > 0x9f) {
-                     return 0;
-                 }
-            }
-            else {
-                start_idx += 2;
-                size -= 2;
-            }
-        }
-        else if ((first_byte & 0xf0) >> 4 == 0xf) {
-            start_idx += 1;
-            size -= 1;
-            // it's a 4 bytes character, check if there are 3 additional bytes
-            char i;
-            for (i=0; i<3; i++){
-                if ((potential_utf8_str[start_idx] & 0xf0) >> 6 == 0b10) {
-                    start_idx += 1;
-                    size -= 1;
-                }
-                else{
-                    return 0;
-                }
-            }
-        }
-        // it doesn't start with a valid byte
-        else {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-
-//get utf8 character at index i
-//it assumes to have values from 0 to 1112064, which is the number of utf8 characters
-//also the data field inside the returned value should be freed
-//!\ no check is done on the given value!
-Utf8Char get_utf8_char(unsigned int i){
-    Utf8Char result;
-    if (i<0x80){
-        result.data[0] = (char)i;
-        result.size = 1;
-        return result;
-    }
-
-    else if (i<0x800){
-        result.data[0] = (char)(0xc0 | (i>>6));
-        result.data[1] = (char)(0x80 | (i&0x3f));
-        result.size = 2;
-        return result;
-    }
-    else if (i<0x10000-(0xe000 - 0xd800)){
-        if (i >= 0xd800 && i < 0xe000){
-            i+=(0xe000 - 0xd800);
-        }
-        result.data[0] = (char)(0xe0 | (i>>12));
-        result.data[1] = (char)(0x80 | ((i>>6) & 0x3f));
-        result.data[2] = (char)(0x80 | (i&0x3f));
-        result.size = 3;
-        return result;
-    }
-    else{
-        i += (0xe000 - 0xd800);
-        result.data[0] = (char)(0xf0 | (i >> 18));
-        result.data[1] = (char)(0x80 | ((i>>12) & 0x3f));
-        result.data[2] = (char)(0x80 | ((i>>6) & 0x3f));
-        result.data[3] = (char)(0x80 | (i&0x3f));
-        result.size = 4;
-        return result;
-    }
-
-}
-
-ResultSha1 main_operation_sha1(Chunk chunk, ResultSha1 prev_res){
+ResultSha1 main_operation_sha1(Chunk* chunk, ResultSha1 prev_res){
     unsigned char i;
     for (i=0; i<80; i++){
         unsigned int f, k;
@@ -347,7 +56,7 @@ ResultSha1 main_operation_sha1(Chunk chunk, ResultSha1 prev_res){
             k = 0xCA62C1D6;
         }
 
-        unsigned int tmp = rotate_left(prev_res.a, 5) + f + prev_res.e + k + chunk.data[i];
+        unsigned int tmp = rotate_left(prev_res.a, 5) + f + prev_res.e + k + chunk->data[i];
         prev_res.e = prev_res.d;
         prev_res.d = prev_res.c;
         prev_res.c = rotate_left(prev_res.b, 30);
@@ -357,26 +66,25 @@ ResultSha1 main_operation_sha1(Chunk chunk, ResultSha1 prev_res){
     return prev_res;
 }
 
-ResultSha1 addResSha1(ResultSha1 x, ResultSha1 y){
+ResultSha1 addResSha1(ResultSha1* x, ResultSha1* y){
     ResultSha1 result;
-    result.a = x.a + y.a;
-    result.b = x.b + y.b;
-    result.c = x.c + y.c;
-    result.d = x.d + y.d;
-    result.e = x.e + y.e;
+    result.a = x->a + y->a;
+    result.b = x->b + y->b;
+    result.c = x->c + y->c;
+    result.d = x->d + y->d;
+    result.e = x->e + y->e;
     return result;
 }
 
 // checks if the result is more probable
 // returns the new result if candidate is better than best_prob, 0 otherwise
-char is_more_probable(unsigned int candidate, unsigned char best_prob, unsigned char difficulty){
-//    printf("candidate %x\n", ((candidate >> (32 - difficulty - 4)) & 0xf));
-//    printf("-candidate %x\n", ((-candidate >> (32 - difficulty - 4)) & 0xf));
-    if (((candidate >> (32 - difficulty - 4)) & 0xf)  > best_prob){
-        return candidate >> (32 - difficulty - 4) & 0xf;
+//!\ difficulty and probability_len must sum to less than 32
+char is_more_probable(unsigned int candidate, unsigned char best_prob, unsigned char difficulty, unsigned char probability_len){
+    if (((candidate >> (32 - difficulty - probability_len)) & 0xf)  > best_prob){
+        return candidate >> (32 - difficulty - probability_len) & 0xf;
     }
-    else if ((((-candidate) >> (32 - difficulty -4)) & 0xf) > best_prob) {
-        return (-candidate) >> (32 - difficulty -4) & 0xf;
+    else if ((((-candidate) >> (32 - difficulty - probability_len)) & 0xf) > best_prob) {
+        return (-candidate) >> (32 - difficulty - probability_len) & 0xf;
     }
     else {
         return 0;
@@ -384,199 +92,140 @@ char is_more_probable(unsigned int candidate, unsigned char best_prob, unsigned 
 }
 
 
+void prepare_final_chunk(Chunk* c, unsigned char padding_position, unsigned long int total_size){
+
+    c->data[padding_position] = 0x80000000;
+    // the size is encoded on 64 bits
+    c->data[14] = total_size >> 32;
+    c->data[15] = total_size & 0xffffffff;
+    extend_chunk(c);
+}
 
 
-__kernel void explore_sha1(unsigned char difficulty, __global Chunk* random_chunks, ResultSha1 r_initial, unsigned int bit_len, __global unsigned char* finished, __global Chunk* result) {
-    printf("Let's explore a lil\n");
+// fills the chunk with 9 ascii characters, and returns how many integers have been filled in the chunk
+// or -1 if we generate a [\t\r\n ] character
+ char fill_chunk(Chunk* c, unsigned long nbr){
+    unsigned char idx = 0;
+    unsigned char i;
+    unsigned char ascii_char;
+    while (nbr){
+        for(i=0; i<4; i++){
+            ascii_char =  (nbr & 0x7f);
+            if (ascii_char == 0x09 || ascii_char == 0x0a || ascii_char == 0x0d || ascii_char == 0x20){
+                return -1;
+            }
+            c->data[idx] |= ascii_char << (i*8);
+            nbr >>= 7;
+        }
+        idx += 1;
+    }
+    extend_chunk(c);
+    return idx;
+}
+
+__kernel void explore_sha1(unsigned char difficulty,
+    __global Chunk* random_chunks,
+    ResultSha1 r_initial,
+    unsigned int bit_len,
+    __global unsigned char* finished,
+    __global Chunk* result) {
+
     // we consider only the 4 most significant bits
+    unsigned char proba_len = 4;
+
     unsigned int final_result_mask = ((1 << difficulty) - 1) << (32 - difficulty);
+
     // max of 32 chunks so the bit size can be coded within 2 ascii characters' bit size
     Chunk message_chunks[32];
     // systematically add the random chunk
     message_chunks[0] = random_chunks[get_global_id(0)];
-    unsigned char message_chunks_idx = 1;
-    // this isn't exactly a probability since it's not between 0 and 1, this is just the numerator's 4 most significant bits
-    // of the probability (x/2³²)
-    // we start with probability 1/2, which is guaranteed anyway (since we want either to maximize x or C(x)+1)
-    unsigned char best_prob = 0x8;
-
-    // add an initial random chunk's hash to have a different starting point per work-item
-    ResultSha1 r = addResSha1(main_operation_sha1(random_chunks[get_global_id(0)], r_initial), r_initial);
     bit_len += 512;
 
-//    if (r.a >> (32-difficulty) == 0){
-    unsigned int i, j;
-    // since 1 on 2 multiple of 8 are not valid ascii characters (because the 8th bit is always 0), we have to increase
-    // the size by 16 instead of 8, and therefore add at least 2 ascii characters each time
-    // the size is therefore inferior to 2^(9+5) and is a multiple of 16
-    i=bit_len;
-    while (i<0x7f00) {
-        for(j=16; j<127; j+=16){
-            // if we don't have enough space to put ascii characters… we give up!
-            if(i+j-bit_len > 432){
-                return;
-            }
+    unsigned char message_chunks_idx = 1;
+    // this isn't exactly a probability since it's not between 0 and 1, this is just the numerator's proba_len's most significant bits
+    // of the probability (x/2³²)
+    // we start with probability 1/2, which is guaranteed anyway (since we want either to maximize x or C(x)+1)
+    unsigned char best_prob = 1 << (proba_len-1);
+
+    ResultSha1 tmp_r;
+    // add an initial random chunk's hash to have a different starting point per work-item
+    // we don't need to extend the chunk, it's already extended
+    tmp_r = main_operation_sha1(message_chunks, r_initial);
+    ResultSha1 r = addResSha1(&tmp_r, &r_initial);
+
+    unsigned long index = 0;
+    unsigned char probability;
+    Chunk most_probable_chunk;
+    ResultSha1 most_probable_chunk_hash;
+
+    // we have 1/2^(proba_len-1) to find the max probability, so the probability not to find it after n tries is 1-(1-1/2^(proba_len-1))^n
+    // since we set proba_len = 4, we have 99.5% of chance to find it in only 40 tries
+    while (best_prob != ((1 << proba_len) - 1) && index < (1ul<<63)){
+        if (!*finished){
             Chunk c = {0};
-            unsigned long index;
-            unsigned char probability;
-            ResultSha1 tmp_r;
+            // skip forbidden values
+            if (fill_chunk(&c, index) == -1){
+                index += 1;
+                continue;
+            }
+            tmp_r = main_operation_sha1(&c, r);
+            tmp_r = addResSha1(&tmp_r, &r);
 
-            unsigned long max_index = 1ul << (7*(i+j - bit_len-16)/8);
-            // fill a maximum of 9 of the first ascii characters with values from 0 to 2⁶³
-            while (index <= max_index) {
-                if (!finished[0]){
-                    Chunk c = {0};
-                    fill_chunk_with_constraints(&c, (i+j - bit_len - 16)/8, i+j, index);
-                    tmp_r = addResSha1(main_operation_sha1(c, r), r);
-                    if ((tmp_r.a & final_result_mask) == 0){
-                        // bingo!!
-                        // fill the buffer with the chunk and stop everything
-
-                        printf("I found it biatch!!\n");
-                        printf("%08x\n", tmp_r.a);
-                        if (!finished[0]){
-                            // notify other work-items that somebody has found the solution
-                            finished[0] = 1;
-                            unsigned char k;
-                            message_chunks[message_chunks_idx] = c;
-                            message_chunks_idx += 1;
-                            for(k=0; k<message_chunks_idx; k++){
-                                result[k] = message_chunks[k];
-                            }
-                            return;
-                        }
-                    }
-
-                    // no need to check if it's already at the max
-                    if (best_prob != 0xf) {
-                        probability = is_more_probable(tmp_r.a, best_prob, difficulty);
-                        if (probability){
-                            // if we found a better probability, conserve the intermediate values, add the chunk and its hash
-                            // as a permanent solution, and break reset the loop
-                            best_prob = probability;
-                            r = tmp_r;
-                            message_chunks[message_chunks_idx] = c;
-                            message_chunks_idx += 1;
-                            i += 512;
-                            bit_len += 512;
-                            index = 0;
-                        }
-                        else {
-                            index += 1;
-                        }
-                    }
-                    else {
-                        index += 1;
-                    }
-                }
-                else {
-                    //another work-item found the solution, quit
-                    return;
-                }
-
+            probability = is_more_probable(tmp_r.a, best_prob, difficulty, proba_len);
+            if (probability){
+                // if we found a better probability, conserve the intermediate values, add the chunk and its hash
+                // as a permanent solution, and break reset the loop
+                best_prob = probability;
+                most_probable_chunk = c;
             }
         }
-        i += 256;
+        else {
+            return;
+        }
+        index += 1;
+    }
+//    printf("nbr of turn until finding the max %d", index);
+
+    // we found the most probable chunk we could, let's conserve its input and hash values
+    r = tmp_r;
+    message_chunks[message_chunks_idx] = most_probable_chunk;
+    message_chunks_idx += 1;
+    bit_len += 512;
+
+    char padding_idx;
+    index = 0;
+    // we can fill up to 55 ascii characters, 9 will be enough for difficulties that are under 32-proba_len (2⁶³ possibilities)
+    while (index < (1ul<<63) && !*finished){
+        Chunk c = {0};
+        padding_idx = fill_chunk(&c, index);
+        // skip forbidden characters
+        if (padding_idx == -1){
+            index += 1;
+            continue;
+        }
+        prepare_final_chunk(&c, padding_idx, bit_len + padding_idx * 32);
+
+        tmp_r = main_operation_sha1(&c, r);
+        tmp_r = addResSha1(&tmp_r, &r);
+        if ((tmp_r.a & final_result_mask) == 0){
+            // bingo!!
+            // fill the buffer with the chunk and stop everything
+            if (!*finished){
+//                barrier(CLK_GLOBAL_MEM_FENCE);
+                // notify other work-items that somebody has found the solution
+                *finished = 1;
+                unsigned char k;
+                message_chunks[message_chunks_idx] = c;
+                message_chunks_idx += 1;
+                for(k=0; k<message_chunks_idx; k++){
+                    result[k] = message_chunks[k];
+                }
+                return;
+            }
+        }
+        index += 1;
     }
 }
 
 
-//__kernel void explore_sha1(unsigned char difficulty, __global Chunk* random_chunks, ResultSha1 r_initial, unsigned int bit_len, __global unsigned char* finished, __global Chunk* result) {
-//    AsciiSeqGen seq;
-//    init_asciiSeqGen(&seq, 3);
-//    char remaining, i, j;
-//    for(i=0; i<100; i++){
-//        remaining = nextAsciiSeq(&seq);
-//        printf("remaining %d", remaining);
-//        if(remaining){
-//            for(i=0; i<seq.size; i++){
-//                printf("%x", seq.sequence[i]);
-//            }
-//        }
-//        printf("\n");
-//    }
 
-//    printf("Let's explore a lil");
-//    // we consider only the 4 most significant bits
-//    unsigned int final_result_mask = 0xf0000000;
-//    // max of 32 chunks so the bit size can be coded within 2 ascii characters' bit size
-//    Chunk message_chunks[32];
-//    // systematically add the random chunk
-//    message_chunks[0] = random_chunks[get_global_id(0)];
-//    unsigned char message_chunks_idx = 1;
-//    // this isn't exactly a probability since it's not between 0 and 1, this is just the numerator's 4 most significant bits
-//    // of the probability (x/2³²)
-//    // we start with probability 1/2, which is guaranteed anyway (since we want either to maximize x or C(x)+1)
-//    unsigned char best_prob = 0x8;
-//
-//    // add an initial random chunk's hash to have a different starting point per work-item
-//    ResultSha1 r = addResSha1(main_operation_sha1(random_chunks[get_global_id(0)], r_initial), r_initial);
-//    bit_len += 512;
-//
-////    if (r.a >> (32-difficulty) == 0){
-//    unsigned int i, j;
-//    unsigned long max_index = 1ul << 63;
-//    // since 1 on 2 multiple of 8 are not valid ascii characters (because the 8th bit is always 0), we have to increase
-//    // the size by 16 instead of 8, and therefore add at least 2 ascii characters each time
-//    // the size is therefore inferior to 2^(9+5) and is a multiple of 16
-//    for(i=bit_len; i<0x7f00; i+= 256){
-//        for(j=16; j<127; j+=16){
-//            Chunk c = {0};
-//            unsigned long index;
-//            unsigned char probability;
-//            ResultSha1 tmp_r;
-//
-//            // fill a maximum of 9 of the first ascii characters with values from 0 to 2⁶³
-//            while (index <= max_index) {
-//                if (!finished[0]){
-//                    Chunk c = {0};
-//                    fill_chunk_with_constraints(&c, (i+j - bit_len - 16)/8, i+j, index);
-//                    tmp_r = addResSha1(main_operation_sha1(c, r), r);
-//                    if ((tmp_r.a & final_result_mask) == 0){
-//                        // bingo!!
-//                        // fill the buffer with the chunk and stop everything
-//
-//                        printf("I found it biatch!!");
-//                        printf("%x", tmp_r.a);
-//                        if (!finished[0]){
-//                            // notify other work-items that somebody has found the solution
-//                            finished[0] = 1;
-//                            unsigned char k;
-//                            message_chunks[message_chunks_idx] = c;
-//                            message_chunks_idx += 1;
-//                            for(k=0; k<message_chunks_idx; k++){
-//                                result[k] = message_chunks[k];
-//                            }
-//                            return;
-//                        }
-//                    }
-//
-//                    // no need to check if it's already at the max
-//                    if (best_prob != 0xf) {
-//                        probability = is_more_probable(tmp_r.a, best_prob, difficulty);
-//            //            printf("proba %x, tmp_r %x, best_prob %x", probability, tmp_r.a, best_prob);
-//                        if (probability){
-//                            printf("found a better alternative");
-//                            // if we found a better probability, conserve the intermediate values, add the chunk and its hash
-//                            // as a permanent solution, and break reset the loop
-//                            best_prob = probability;
-//                            r = tmp_r;
-//                            message_chunks[message_chunks_idx] = c;
-//                            message_chunks_idx += 1;
-//                            bit_len += 512;
-//                            index = 0;
-//                        }
-//                        else {
-//                            index += 1;
-//                        }
-//                    }
-//                }
-//                else {
-//                    //another work-item found the solution, quit
-//                    return;
-//                }
-//
-//            }
-//         }
-//    }
-//}
