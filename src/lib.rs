@@ -17,16 +17,16 @@ use num_bigint::{ToBigInt, BigInt};
 use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
+use std::time::{Duration, Instant};
 
 #[pyfunction]
 // find a suffix of `bytes` such as the hash of the whole has at least n zeros
-pub fn find_n_first_zeros_sha1(mut bytes: Vec<u8>, n: u8, workitem_nbr: usize) -> PyResult<Vec<u8>> {
+pub fn find_n_first_zeros_sha1(mut bytes: Vec<u8>, n: u8, workitem_nbr: usize, proba_len: u8) -> PyResult<Vec<u8>> {
     let h0 : u32 = 0x67452301;
     let h1 : u32 = 0xEFCDAB89;
     let h2 : u32 = 0x98BADCFE;
     let h3 : u32 = 0x10325476;
     let h4 : u32 = 0xC3D2E1F0;
-//    padding_to_512_multiple(&mut bytes, 0);
     let bits_len: u32 = (bytes.len() * 8) as u32;
     assert_eq!(bits_len % 512, 0);
 
@@ -38,10 +38,7 @@ pub fn find_n_first_zeros_sha1(mut bytes: Vec<u8>, n: u8, workitem_nbr: usize) -
     for chunk in chunks {
         result += main_operation_sha1(chunk, result);
     }
-    Ok(explore_sha1_ocl(result, n, bits_len, workitem_nbr).unwrap())
-//    bytes.into_iter()
-//        .chain(explore_sha1_ocl(result, n, bits_len, workitem_nbr).unwrap())
-//        .collect()
+    Ok(explore_sha1_ocl(result, n, bits_len, workitem_nbr, proba_len).unwrap())
 }
 
 #[pymodule]
@@ -89,7 +86,7 @@ pub fn sha1(m : &str) -> BigInt {
 
 
 
-fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32, workitem_nbr: usize) -> ocl::Result<Vec<u8>> {
+fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32, workitem_nbr: usize, proba_len: u8) -> ocl::Result<Vec<u8>> {
 
     let mut file = File::open("src/kernel.cl").unwrap();
     let mut src = String::new();
@@ -118,7 +115,8 @@ fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32, workit
     let dims = [workitem_nbr, 1, 1];
 
     // (2) Create buffers:
-    let random_chunks = Chunk::generateRandomChunks(dims[0] as u32);
+
+    let random_chunks = Chunk::generateDeterministChunks(dims[0] as u32);
     let random_chunks = unsafe { core::create_buffer(&context, flags::MEM_READ_ONLY |
         flags::MEM_COPY_HOST_PTR, dims[0], Some(&random_chunks)).unwrap() };
     let finished = unsafe { core::create_buffer(&context, flags::MEM_READ_WRITE |
@@ -136,6 +134,7 @@ fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32, workit
     core::set_kernel_arg(&kernel, 3, ArgVal::scalar(&bit_len)).unwrap();
     core::set_kernel_arg(&kernel, 4, ArgVal::mem(&finished)).unwrap();
     core::set_kernel_arg(&kernel, 5, ArgVal::mem(&result)).unwrap();
+    core::set_kernel_arg(&kernel, 6, ArgVal::scalar(&proba_len)).unwrap();
 
     // (4) Run the kernel:
     unsafe { core::enqueue_kernel(&queue, &kernel, 1, None, &dims,
@@ -203,24 +202,7 @@ pub fn padding_to_512_multiple(bytes: &mut Vec<u8>, value: u8){
         bytes.resize(final_length, value);
     }
 }
-//fn fill_chunk(Chunk* c, unsigned long nbr) -> Vec<>{
-//    unsigned char idx = 0;
-//    unsigned char i;
-//    unsigned char ascii_char;
-//    while (nbr){
-//    for(i=0; i<4; i++){
-//    ascii_char =  (nbr & 0x7f);
-//    if (ascii_char == 0x09 || ascii_char == 0x0a || ascii_char == 0x0d || ascii_char == 0x20){
-//    return -1;
-//    }
-//    c->data[idx] |= ascii_char << (i*8);
-//    nbr >>= 7;
-//    }
-//    idx += 1;
-//    }
-//    extend_chunk(c);
-//    return idx;
-//}
+
 fn main_operation_sha1(chunk: Chunk, mut r: ResultSha1) -> ResultSha1 {
     for i in 0..80 {
         let f : Wrapping<u32>;
@@ -292,10 +274,17 @@ impl Chunk {
 
     pub fn generateDeterministChunks(size: u32) -> Vec<Chunk>{
         let mut result = Vec::new();
-        let index = 0u64;
-        while size != 0 && index < (1u64 << 63) {
-            let mut rc: Chunk = Chunk::default();
-
+        let mut index = 0u64;
+        while result.len() != size as usize && index < (1u64 << 63) {
+            let ascii_char =  (index & 0x7f);
+            // we also prevent 0 so we never have the exact same chunk
+            if ascii_char != 0x00 && ascii_char != 0x09 && ascii_char != 0x0a && ascii_char != 0x0d && ascii_char != 0x20 {
+                let mut rc: Chunk = Chunk::default();
+                rc.data[(index/256) as usize ] = ascii_char as u32;
+                rc.extend_chunk();
+                result.push(rc);
+            }
+            index += 1;
         }
         result
     }
@@ -311,7 +300,6 @@ impl Chunk {
             result.push(rc);
         }
         result
-//        Chunk::from_bytes("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".bytes().collect())
     }
 
     fn generateRandomChunkPart() -> u32 {

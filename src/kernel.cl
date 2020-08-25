@@ -1,5 +1,5 @@
-// create finalChunk with size 16 instead
-// get rid of the padding and size when solution found
+// TODO create finalChunk with size 16 instead
+// TODO get rid of the padding and size when solution found
 
 typedef struct {
     char data[4];
@@ -80,17 +80,23 @@ ResultSha1 addResSha1(ResultSha1* x, ResultSha1* y){
 // returns the new result if candidate is better than best_prob, 0 otherwise
 //!\ difficulty and probability_len must sum to less than 32
 char is_more_probable(unsigned int candidate, unsigned char best_prob, unsigned char difficulty, unsigned char probability_len){
-    if (((candidate >> (32 - difficulty - probability_len)) & 0xf)  > best_prob){
-        return candidate >> (32 - difficulty - probability_len) & 0xf;
+    char shift = 32 - difficulty - probability_len;
+    if (((candidate >> shift) & 0xf)  > best_prob){
+        return (candidate >> shift) & 0xf;
     }
-    else if ((((-candidate) >> (32 - difficulty - probability_len)) & 0xf) > best_prob) {
-        return (-candidate) >> (32 - difficulty - probability_len) & 0xf;
+    else if ((((-candidate - 1) >> shift) & 0xf) > best_prob) {
+        return ((-candidate - 1) >> shift) & 0xf;
     }
     else {
         return 0;
     }
 }
 
+unsigned char get_probability_bits(unsigned int candidate, unsigned char difficulty, unsigned char probability_len){
+    unsigned char shift = 32 - difficulty - probability_len;
+    unsigned char mask = (1 << probability_len) -1;
+    return (candidate >> shift) & mask;
+}
 
 void prepare_final_chunk(Chunk* c, unsigned char padding_position, unsigned long int total_size){
 
@@ -123,44 +129,45 @@ char fill_chunk(Chunk* c, unsigned long nbr){
     return idx;
 }
 
+
+// return the result from the chunk
+ResultSha1 get_next_r(Chunk* chunk, ResultSha1* previous_r){
+    ResultSha1 r = main_operation_sha1(chunk, *previous_r);
+    return addResSha1(previous_r, &r);
+}
+
 __kernel void explore_sha1(unsigned char difficulty,
     __global Chunk* random_chunks,
     ResultSha1 r_initial,
     unsigned int bit_len,
     __global unsigned char* finished,
-    __global Chunk* result) {
-
-    // we consider only the 4 most significant bits
-    unsigned char proba_len = 4;
+    __global Chunk* result,
+    unsigned char proba_len) {
 
     unsigned int final_result_mask = ((1 << difficulty) - 1) << (32 - difficulty);
 
-    // max of 32 chunks so the bit size can be coded within 2 ascii characters' bit size
-    Chunk message_chunks[32];
+    Chunk message_chunks[3];
     // systematically add the random chunk
     message_chunks[0] = random_chunks[get_global_id(0)];
+
     bit_len += 512;
 
     unsigned char message_chunks_idx = 1;
-    // this isn't exactly a probability since it's not between 0 and 1, this is just the numerator's proba_len's most significant bits
-    // of the probability (x/2³²)
-    // we start with probability 1/2, which is guaranteed anyway (since we want either to maximize x or C(x)+1)
-    unsigned char best_prob = 1 << (proba_len-1);
 
-    ResultSha1 tmp_r;
     // add an initial random chunk's hash to have a different starting point per work-item
     // we don't need to extend the chunk, it's already extended
-    tmp_r = main_operation_sha1(message_chunks, r_initial);
+    ResultSha1 tmp_r = main_operation_sha1(message_chunks, r_initial);
     ResultSha1 r = addResSha1(&tmp_r, &r_initial);
 
     unsigned long index = 0;
-    unsigned char probability;
-    Chunk most_probable_chunk;
-    ResultSha1 most_probable_chunk_hash;
+    Chunk most_probable_chunk_minimize, most_probable_chunk_maximize;
+    ResultSha1 r_minimize_carry, r_maximize_carry;
+    //assuming probability bits <= 8
+    unsigned char min_found=0, max_found=0, probability_bits;
 
-    // we have 1/2^(proba_len-1) to find the max probability, so the probability not to find it after n tries is 1-(1-1/2^(proba_len-1))^n
-    // since we set proba_len = 4, we have 99.5% of chance to find it in only 40 tries
-    while (best_prob != ((1 << proba_len) - 1) && index < (1ul<<63)){
+    // we have 1/2^(proba_len) to find the max or min probability, so the probability not to find them after n tries is (1-1/2^(proba_len*2))^n
+    // if we set proba_len = 4, we have 99.4% of chance to find them in 80 tries
+    while ((!min_found || !max_found) && index < (1ul<<63)) {
         if (!*finished){
             Chunk c = {0};
             // skip forbidden values
@@ -168,15 +175,18 @@ __kernel void explore_sha1(unsigned char difficulty,
                 index += 1;
                 continue;
             }
-            tmp_r = main_operation_sha1(&c, r);
-            tmp_r = addResSha1(&tmp_r, &r);
+            tmp_r = get_next_r(&c, &r);
 
-            probability = is_more_probable(tmp_r.a, best_prob, difficulty, proba_len);
-            if (probability){
-                // if we found a better probability, conserve the intermediate values, add the chunk and its hash
-                // as a permanent solution, and break reset the loop
-                best_prob = probability;
-                most_probable_chunk = c;
+            probability_bits = get_probability_bits(tmp_r.a, difficulty, proba_len);
+            if (!max_found && probability_bits == (1 << proba_len) -1){
+                max_found = 1;
+                r_maximize_carry = tmp_r;
+                most_probable_chunk_maximize = c;
+            }
+            else if (!min_found && probability_bits == 0){
+                min_found = 1;
+                r_minimize_carry = tmp_r;
+                most_probable_chunk_minimize = c;
             }
         }
         else {
@@ -184,12 +194,9 @@ __kernel void explore_sha1(unsigned char difficulty,
         }
         index += 1;
     }
-//    printf("nbr of turn until finding the max %d", index);
+    // we certainly found the most probable chunks we could
 
-    // we found the most probable chunk we could, let's conserve its input and hash values
-    r = tmp_r;
-    message_chunks[message_chunks_idx] = most_probable_chunk;
-    message_chunks_idx += 1;
+    // let's pretend we added the chunk (we'll add one of the two later)
     bit_len += 512;
 
     char padding_idx;
@@ -205,16 +212,38 @@ __kernel void explore_sha1(unsigned char difficulty,
         }
         prepare_final_chunk(&c, padding_idx, bit_len + padding_idx * 32);
 
-        tmp_r = main_operation_sha1(&c, r);
-        tmp_r = addResSha1(&tmp_r, &r);
+        // try with the result that minimizes overflowing
+        tmp_r = get_next_r(&c, &r_minimize_carry);
         if ((tmp_r.a & final_result_mask) == 0){
             // bingo!!
             // fill the buffer with the chunk and stop everything
             if (!*finished){
-//                barrier(CLK_GLOBAL_MEM_FENCE);
                 // notify other work-items that somebody has found the solution
                 *finished = 1;
                 unsigned char k;
+                message_chunks[message_chunks_idx] = most_probable_chunk_minimize;
+                message_chunks_idx += 1;
+                message_chunks[message_chunks_idx] = c;
+                message_chunks_idx += 1;
+                for(k=0; k<message_chunks_idx; k++){
+                    result[k] = message_chunks[k];
+                }
+                return;
+            }
+        }
+
+        // try with the result that maximizes overflowing
+        tmp_r = get_next_r(&c, &r_maximize_carry);
+        if ((tmp_r.a & final_result_mask) == 0){
+            // bingo!!
+            // fill the buffer with the chunk and stop everything
+            if (!*finished){
+                // notify other work-items that somebody has found the solution
+                *finished = 1;
+//                printf("found with carry %08x", tmp_r.a);
+                unsigned char k;
+                message_chunks[message_chunks_idx] = most_probable_chunk_maximize;
+                message_chunks_idx += 1;
                 message_chunks[message_chunks_idx] = c;
                 message_chunks_idx += 1;
                 for(k=0; k<message_chunks_idx; k++){
@@ -226,6 +255,5 @@ __kernel void explore_sha1(unsigned char difficulty,
         index += 1;
     }
 }
-
 
 
