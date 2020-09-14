@@ -137,7 +137,6 @@ char fill_chunk(Chunk* c, unsigned long nbr){
 
 unsigned char is_final_answer(ResultSha1* r, unsigned long final_result_mask){
 
-    return (r->a & 0xffffffff) == 0 && (r->b & 0xf0000000) == 0;
     if (final_result_mask <= (1ul << 32) -1){
         return (r->a & final_result_mask) == 0;
     }
@@ -161,8 +160,6 @@ __kernel void explore_sha1(unsigned char difficulty,
     __global Chunk* result,
     unsigned char proba_len) {
 
-    difficulty *= 4;
-//    printf("difficulty %d", difficulty);
     unsigned long final_result_mask = ((1ul << difficulty) - 1) << (64 - difficulty);
 
     Chunk message_chunks[3];
