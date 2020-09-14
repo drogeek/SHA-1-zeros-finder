@@ -76,26 +76,32 @@ ResultSha1 addResSha1(ResultSha1* x, ResultSha1* y){
     return result;
 }
 
-// checks if the result is more probable
-// returns the new result if candidate is better than best_prob, 0 otherwise
-//!\ difficulty and probability_len must sum to less than 32
-char is_more_probable(unsigned int candidate, unsigned char best_prob, unsigned char difficulty, unsigned char probability_len){
-    char shift = 32 - difficulty - probability_len;
-    if (((candidate >> shift) & 0xf)  > best_prob){
-        return (candidate >> shift) & 0xf;
-    }
-    else if ((((-candidate - 1) >> shift) & 0xf) > best_prob) {
-        return ((-candidate - 1) >> shift) & 0xf;
-    }
-    else {
-        return 0;
-    }
-}
 
-unsigned char get_probability_bits(unsigned int candidate, unsigned char difficulty, unsigned char probability_len){
-    unsigned char shift = 32 - difficulty - probability_len;
-    unsigned char mask = (1 << probability_len) -1;
-    return (candidate >> shift) & mask;
+
+unsigned int get_probability_bits(ResultSha1* r, unsigned char difficulty, unsigned char probability_len){
+    //  we assume probability_len is picked accordingly to difficulty, so that difficulty + probability_len <= 32
+    unsigned int mask = (1 << probability_len) -1;
+    int difference_first_byte = 32 - difficulty;
+    // if it's less than 32 bits long
+    if (difference_first_byte > 0){
+        if (difficulty + probability_len <= 32) {
+            unsigned char shift = difference_first_byte - probability_len;
+            return (r->a >> shift) & mask;
+        }
+        else {
+            unsigned int result;
+            // we want to retrieve the part of probability_len that sit on r.a, and then move it to the upper part of the result
+            result = (((1 << difference_first_byte) -1) & r->a) << (probability_len - difference_first_byte);
+            // we want to retrieve the part of probability_len that sit on r.b, and then move it to the lower part of the result
+            result |=  r->b & ((1 << (probability_len - difference_first_byte)) -1);
+            return result;
+        }
+    }
+    // it's more than 32 bits long
+    else {
+         unsigned char shift = 64 - difficulty - probability_len;
+         return (r->b >> shift) & mask;
+    }
 }
 
 void prepare_final_chunk(Chunk* c, unsigned char padding_position, unsigned long int total_size){
@@ -129,6 +135,17 @@ char fill_chunk(Chunk* c, unsigned long nbr){
     return idx;
 }
 
+unsigned char is_final_answer(ResultSha1* r, unsigned long final_result_mask){
+
+    return (r->a & 0xffffffff) == 0 && (r->b & 0xf0000000) == 0;
+    if (final_result_mask <= (1ul << 32) -1){
+        return (r->a & final_result_mask) == 0;
+    }
+    else{
+        return (r->a & (final_result_mask >> 32)) == 0 &&
+            (r->b & (final_result_mask & 0xffffffff)) == 0;
+    }
+}
 
 // return the result from the chunk
 ResultSha1 get_next_r(Chunk* chunk, ResultSha1* previous_r){
@@ -144,7 +161,9 @@ __kernel void explore_sha1(unsigned char difficulty,
     __global Chunk* result,
     unsigned char proba_len) {
 
-    unsigned int final_result_mask = ((1 << difficulty) - 1) << (32 - difficulty);
+    difficulty *= 4;
+//    printf("difficulty %d", difficulty);
+    unsigned long final_result_mask = ((1ul << difficulty) - 1) << (64 - difficulty);
 
     Chunk message_chunks[3];
     // systematically add the random chunk
@@ -162,8 +181,8 @@ __kernel void explore_sha1(unsigned char difficulty,
     unsigned long index = 0;
     Chunk most_probable_chunk_minimize, most_probable_chunk_maximize;
     ResultSha1 r_minimize_carry, r_maximize_carry;
-    //assuming probability bits <= 8
-    unsigned char min_found=0, max_found=0, probability_bits;
+    unsigned char min_found=0, max_found=0;
+    unsigned int probability_bits;
 
     // we have 1/2^(proba_len) to find the max or min probability, so the probability not to find them after n tries is (1-1/2^(proba_len*2))^n
     // if we set proba_len = 4, we have 99.4% of chance to find them in 80 tries
@@ -177,8 +196,8 @@ __kernel void explore_sha1(unsigned char difficulty,
             }
             tmp_r = get_next_r(&c, &r);
 
-            probability_bits = get_probability_bits(tmp_r.a, difficulty, proba_len);
-            if (!max_found && probability_bits == (1 << proba_len) -1){
+            probability_bits = get_probability_bits(&tmp_r, difficulty, proba_len);
+            if (!max_found && probability_bits == ((1 << proba_len) -1)){
                 max_found = 1;
                 r_maximize_carry = tmp_r;
                 most_probable_chunk_maximize = c;
@@ -203,6 +222,7 @@ __kernel void explore_sha1(unsigned char difficulty,
     index = 0;
     // we can fill up to 55 ascii characters, 9 will be enough for difficulties that are under 32-proba_len (2⁶³ possibilities)
     while (index < (1ul<<63) && !*finished){
+//    while (index < (1ul<<9) && !*finished){
         Chunk c = {0};
         padding_idx = fill_chunk(&c, index);
         // skip forbidden characters
@@ -214,7 +234,7 @@ __kernel void explore_sha1(unsigned char difficulty,
 
         // try with the result that minimizes overflowing
         tmp_r = get_next_r(&c, &r_minimize_carry);
-        if ((tmp_r.a & final_result_mask) == 0){
+        if (is_final_answer(&tmp_r, final_result_mask)){
             // bingo!!
             // fill the buffer with the chunk and stop everything
             if (!*finished){
@@ -231,10 +251,10 @@ __kernel void explore_sha1(unsigned char difficulty,
                 return;
             }
         }
-
         // try with the result that maximizes overflowing
         tmp_r = get_next_r(&c, &r_maximize_carry);
-        if ((tmp_r.a & final_result_mask) == 0){
+
+        if (is_final_answer(&tmp_r, final_result_mask)){
             // bingo!!
             // fill the buffer with the chunk and stop everything
             if (!*finished){

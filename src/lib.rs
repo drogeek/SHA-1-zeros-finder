@@ -116,7 +116,8 @@ fn explore_sha1_ocl(initial_r : ResultSha1, difficulty: u8, bit_len: u32, workit
 
     // (2) Create buffers:
 
-    let random_chunks = Chunk::generateDeterministChunks(dims[0] as u32);
+//    let random_chunks = Chunk::generateDeterministChunks(dims[0] as u32);
+    let random_chunks = Chunk::generateRandomChunks(dims[0] as u32);
     let random_chunks = unsafe { core::create_buffer(&context, flags::MEM_READ_ONLY |
         flags::MEM_COPY_HOST_PTR, dims[0], Some(&random_chunks)).unwrap() };
     let finished = unsafe { core::create_buffer(&context, flags::MEM_READ_WRITE |
